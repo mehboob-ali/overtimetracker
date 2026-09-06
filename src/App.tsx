@@ -145,8 +145,8 @@ const [isEditing, setIsEditing] = useState(false);
   const [otRecords, setOtRecords] = useLocalStorage<OTRecord[]>('ot_records', []);
 
   // Modal State
-  const [selectedDate, setSelectedDate] = useState(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
+const [selectedDate, setSelectedDate] = useState(null);  
+const [isModalOpen, setIsModalOpen] = useState(false);
   const [customHours, setCustomHours] = useState('');
   const [otError, setOtError] = useState('');
 
@@ -246,7 +246,13 @@ const [isEditing, setIsEditing] = useState(false);
     setIsModalOpen(true);
   };
 
+  console.log('hi');
+
   const saveOtRecord = (hoursStr: string): void => {
+    if (!selectedDate) {
+  setOtError('Please select a date first.');
+  return;
+}
     const hours = parseFloat(hoursStr);
 
     if (!isNaN(hours) && (hours < 0 || hours > 24)) {

@@ -533,7 +533,7 @@ const [isEditing, setIsEditing] = useState(false);
         </div>
 
         {/* Summary Card (Moved Down) */}
-        <div className="px-4 mt-2 flex-none">
+        <div className="px-4 mt-3 flex-none">
           <div className="bg-slate-900 text-white rounded-3xl p-3 shadow-xl shadow-slate-900/10">
             <div className="flex justify-between items-end mb-2">
               <div>

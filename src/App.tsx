@@ -48,7 +48,7 @@ const formatDateToYYYYMMDD = (date: Date | string | number): string => {
 
 // Handle Input Blur on Wheel
 const handleWheelBlur = (e: React.WheelEvent<HTMLInputElement>) => {
-  e.target.blur();
+  (e.target as HTMLElement).blur();
 };
 
 interface PaySettings {
@@ -145,8 +145,8 @@ const [isEditing, setIsEditing] = useState(false);
   const [otRecords, setOtRecords] = useLocalStorage<OTRecord[]>('ot_records', []);
 
   // Modal State
-const [selectedDate, setSelectedDate] = useState(null);  
-const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
   const [customHours, setCustomHours] = useState('');
   const [otError, setOtError] = useState('');
 
@@ -246,14 +246,13 @@ const [isModalOpen, setIsModalOpen] = useState(false);
     setIsModalOpen(true);
   };
 
-  console.log('hi');
-
   const saveOtRecord = (hoursStr: string): void => {
     if (!selectedDate) {
-  setOtError('Please select a date first.');
-  return;
-}
-    const hours = parseFloat(hoursStr);
+      setOtError('Please select a date first.');
+      return;
+    }
+
+    const hours = Number(hoursStr);
 
     if (!isNaN(hours) && (hours < 0 || hours > 24)) {
       setOtError('OT hours must be between 0 and 24 hours for one day.');
@@ -428,7 +427,7 @@ const [isModalOpen, setIsModalOpen] = useState(false);
             </div>
 
             {/* Grid */}
-            <div className="grid grid-cols-7 gap-0.5 flex-1 min-h-0 [grid-auto-rows:1fr]">
+            <div className="grid grid-cols-7 gap-0.5 flex-1 min-h-0 auto-rows-[1fr]">
               {blanksArray.map((_, i) => (
                 <div key={`blank-${i}`} className="h-full w-full"></div>
               ))}
@@ -499,7 +498,7 @@ const [isModalOpen, setIsModalOpen] = useState(false);
               </div>
               <div className="text-right">
                 <span className="text-sm font-bold">{formatCurrency(currentCycleStats.totalProjected)}</span>
-                <span className="text-xs text-slate-400 block mt-0.5">Target: {formatCurrency(paySettings.goalSalary)}</span>
+                <span className="text-xs text-slate-400 block mt-0.5">Target: {formatCurrency(Number(paySettings.goalSalary))}</span>
               </div>
             </div>
           </div>
@@ -964,7 +963,7 @@ const [isModalOpen, setIsModalOpen] = useState(false);
                 <button
                   onClick={() => saveOtRecord(customHours)}
                   disabled={!customHours || isNaN(parseFloat(customHours))}
-                  className="flex-[2] py-4 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl shadow-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="flex-2 py-4 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl shadow-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   <Check size={20} /> Save Entry
                 </button>

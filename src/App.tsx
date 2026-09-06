@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Settings, LayoutDashboard, History, Check, X, Calculator, TrendingUp } from 'lucide-react';
 
 // Utility function to format currency
@@ -11,44 +11,68 @@ const formatCurrency = (amount: number): string => {
   }).format(amount);
 };
 
-// Custom hook for local storage
-function useLocalStorage<T>(key: string, initialValue: T): [T, React.Dispatch<React.SetStateAction<T>>] {
-  const [storedValue, setStoredValue] = useState(() => {
+// Custom hook for local storage with optional runtime sanitization.
+function useLocalStorage<T>(
+  key: string,
+  initialValue: T,
+  sanitize?: (value: unknown) => T
+): [T, React.Dispatch<React.SetStateAction<T>>] {
+  const [storedValue, setStoredValue] = useState<T>(() => {
     try {
       const item = window.localStorage.getItem(key);
-      return item ? JSON.parse(item) : initialValue;
+      if (!item) return initialValue;
+      const parsed: unknown = JSON.parse(item);
+      return sanitize ? sanitize(parsed) : (parsed as T);
     } catch (error) {
-      console.warn(error);
+      console.warn(`Could not read localStorage key "${key}"`, error);
       return initialValue;
     }
   });
 
-  const setValue = (value: T | ((prev: T) => T)): void => {
+  useEffect(() => {
     try {
-      const valueToStore = value instanceof Function ? value(storedValue) : value;
-      setStoredValue(valueToStore);
+      const valueToStore = sanitize ? sanitize(storedValue) : storedValue;
       window.localStorage.setItem(key, JSON.stringify(valueToStore));
     } catch (error) {
-      console.warn(error);
+      console.warn(`Could not write localStorage key "${key}"`, error);
     }
-  };
+  }, [key, sanitize, storedValue]);
 
-  return [storedValue, setValue];
+  return [storedValue, setStoredValue];
 }
 
-// Helper to safely format YYYY-MM-DD
-const formatDateToYYYYMMDD = (date: Date | string | number): string => {
-  const d = new Date(date);
-  if (isNaN(d.getTime())) return '';
-  const month = '' + (d.getMonth() + 1);
-  const day = '' + d.getDate();
-  const year = d.getFullYear();
-  return [year, month.padStart(2, '0'), day.padStart(2, '0')].join('-');
+// Date-only helpers. Never parse YYYY-MM-DD with new Date(string), because
+// that is interpreted as UTC and can display the previous day in some timezones.
+const parseDateOnly = (value: string): Date | null => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return null;
+  return date;
 };
 
-// Handle Input Blur on Wheel
+const formatDateToYYYYMMDD = (date: Date): string => {
+  if (isNaN(date.getTime())) return '';
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+const addMonthsKeepingDay = (date: Date, months: number): Date => {
+  const target = new Date(date.getFullYear(), date.getMonth() + months, 1);
+  const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+  return new Date(target.getFullYear(), target.getMonth(), Math.min(date.getDate(), lastDay));
+};
+
+const addDays = (date: Date, days: number): Date => {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+};
+
+const isValidDateString = (value: unknown): value is string => typeof value === 'string' && parseDateOnly(value) !== null;
+
+// Prevent number inputs from changing when the user scrolls over them.
 const handleWheelBlur = (e: React.WheelEvent<HTMLInputElement>) => {
-  (e.target as HTMLElement).blur();
+  e.currentTarget.blur();
 };
 
 interface PaySettings {
@@ -73,15 +97,20 @@ interface SettingsValidation {
 }
 
 const getCycleLengthForStart = (startDay: number, endDay: number, year: number, month: number): number | null => {
-  if (!Number.isInteger(startDay) || !Number.isInteger(endDay) || startDay < 1 || endDay < 1 || startDay > 31 || endDay > 31) return null;
-  const daysInStartMonth = new Date(year, month + 1, 0).getDate();
-  if (startDay > daysInStartMonth) return null;
-  if (endDay >= startDay) return endDay - startDay + 1;
-  const endMonth = (month + 1) % 12;
-  const endYear = month === 11 ? year + 1 : year;
-  const daysInEndMonth = new Date(endYear, endMonth + 1, 0).getDate();
-  if (endDay > daysInEndMonth) return null;
-  return (daysInStartMonth - startDay + 1) + endDay;
+  if (!Number.isInteger(startDay) || !Number.isInteger(endDay) || startDay < 1 || endDay < 1 || startDay > 28 || endDay > 31) return null;
+  const startDate = new Date(year, month, startDay);
+  if (startDate.getMonth() !== month) return null;
+
+  if (endDay >= startDay) {
+    const endDate = new Date(year, month, endDay);
+    if (endDate.getMonth() !== month) return null;
+    return endDay - startDay + 1;
+  }
+
+  const endDate = new Date(year, month + 1, endDay);
+  const nextMonth = (month + 1) % 12;
+  if (endDate.getMonth() !== nextMonth) return null;
+  return Math.round((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
 };
 
 const validatePaySettings = (settings: PaySettings): SettingsValidation => {
@@ -94,6 +123,7 @@ const validatePaySettings = (settings: PaySettings): SettingsValidation => {
   const otGoal = Number(settings.otGoal);
   const cycleStartDay = Number(settings.cycleStartDay);
   const cycleEndDay = Number(settings.cycleEndDay);
+
   if (!name) errors.push('Name is required.');
   if (!Number.isFinite(baseSalary) || baseSalary <= 0) errors.push('Basic monthly salary must be greater than ₹0.');
   if (!Number.isFinite(goalSalary) || goalSalary <= 0) errors.push('Goal salary must be greater than ₹0.');
@@ -101,23 +131,69 @@ const validatePaySettings = (settings: PaySettings): SettingsValidation => {
   if (!Number.isInteger(workingDays) || workingDays < 1 || workingDays > 31) errors.push('Working days must be a whole number between 1 and 31.');
   if (!Number.isFinite(hoursPerDay) || hoursPerDay <= 0 || hoursPerDay > 24) errors.push('Hours per day must be greater than 0 and no more than 24.');
   if (!Number.isFinite(otGoal) || otGoal < 0 || otGoal > 744) errors.push('OT goal must be between 0 and 744 hours.');
-  if (!Number.isInteger(cycleStartDay) || cycleStartDay < 1 || cycleStartDay > 31) errors.push('Cycle start day must be a whole number between 1 and 31.');
+  if (!Number.isInteger(cycleStartDay) || cycleStartDay < 1 || cycleStartDay > 28) errors.push('Cycle start day must be a whole number between 1 and 28 so it exists every month.');
   if (!Number.isInteger(cycleEndDay) || cycleEndDay < 1 || cycleEndDay > 31) errors.push('Cycle end day must be a whole number between 1 and 31.');
-  if (Number.isInteger(cycleStartDay) && Number.isInteger(cycleEndDay)) {
-    // Validate the chosen pair against calendar months that can actually contain
-    // the selected start day. The cycle itself must always be 30 or 31 days.
-    const possibleLengths = [
-      getCycleLengthForStart(cycleStartDay, cycleEndDay, 2026, 0), // January (31)
-      getCycleLengthForStart(cycleStartDay, cycleEndDay, 2026, 3), // April (30)
-    ].filter((value): value is number => value !== null);
 
-    if (possibleLengths.length === 0) {
-      errors.push('This start/end day combination is not valid for a calendar month.');
-    } else if (!possibleLengths.some(length => length === 30 || length === 31)) {
-      errors.push(`Salary cycle must be exactly 30 or 31 days. This combination creates ${possibleLengths.join(' or ')} days.`);
+  if (Number.isInteger(cycleStartDay) && Number.isInteger(cycleEndDay) && cycleStartDay >= 1 && cycleStartDay <= 28 && cycleEndDay >= 1 && cycleEndDay <= 31) {
+    if (cycleStartDay <= cycleEndDay) {
+      errors.push('Salary cycle must cross the month boundary (for example, 21st to 20th) so every calendar day belongs to a cycle.');
+    }
+    const lengths: number[] = [];
+    for (let month = 0; month < 12; month++) {
+      const length = getCycleLengthForStart(cycleStartDay, cycleEndDay, 2028, month);
+      if (length === null) {
+        errors.push('This salary cycle does not produce a valid date in every month.');
+        break;
+      }
+      lengths.push(length);
+    }
+    if (lengths.length === 12 && lengths.some(length => length < 28 || length > 31)) {
+      const uniqueLengths = [...new Set(lengths)].join(' or ');
+      errors.push(`Salary cycle must be between 28 and 31 days. This combination creates ${uniqueLengths} days.`);
     }
   }
+
   return { isValid: errors.length === 0, errors };
+};
+
+const DEFAULT_SETTINGS: PaySettings = {
+  userName: '',
+  baseSalary: '',
+  goalSalary: '',
+  workingDays: 22,
+  hoursPerDay: 9,
+  otGoal: 40,
+  cycleStartDay: 21,
+  cycleEndDay: 20
+};
+
+const normalizePaySettings = (value: unknown): PaySettings => {
+  const raw = value && typeof value === 'object' ? value as Partial<Record<keyof PaySettings, unknown>> : {};
+  const result: PaySettings = {
+    userName: typeof raw.userName === 'string' ? raw.userName : DEFAULT_SETTINGS.userName,
+    baseSalary: typeof raw.baseSalary === 'string' || typeof raw.baseSalary === 'number' ? raw.baseSalary : DEFAULT_SETTINGS.baseSalary,
+    goalSalary: typeof raw.goalSalary === 'string' || typeof raw.goalSalary === 'number' ? raw.goalSalary : DEFAULT_SETTINGS.goalSalary,
+    workingDays: typeof raw.workingDays === 'string' || typeof raw.workingDays === 'number' ? raw.workingDays : DEFAULT_SETTINGS.workingDays,
+    hoursPerDay: typeof raw.hoursPerDay === 'string' || typeof raw.hoursPerDay === 'number' ? raw.hoursPerDay : DEFAULT_SETTINGS.hoursPerDay,
+    otGoal: typeof raw.otGoal === 'string' || typeof raw.otGoal === 'number' ? raw.otGoal : DEFAULT_SETTINGS.otGoal,
+    cycleStartDay: typeof raw.cycleStartDay === 'string' || typeof raw.cycleStartDay === 'number' ? raw.cycleStartDay : DEFAULT_SETTINGS.cycleStartDay,
+    cycleEndDay: typeof raw.cycleEndDay === 'string' || typeof raw.cycleEndDay === 'number' ? raw.cycleEndDay : DEFAULT_SETTINGS.cycleEndDay,
+  };
+  return result;
+};
+
+const normalizeOTRecords = (value: unknown): OTRecord[] => {
+  if (!Array.isArray(value)) return [];
+  const byDate = new Map<string, OTRecord>();
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as { date?: unknown; hours?: unknown };
+    if (!isValidDateString(raw.date)) continue;
+    const hours = Number(raw.hours);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24) continue;
+    byDate.set(raw.date, { date: raw.date, hours });
+  }
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
 };
 
 export default function App() {
@@ -126,23 +202,14 @@ export default function App() {
   const [isSetupComplete, setIsSetupComplete] = useLocalStorage('ot_setupComplete', false);
   
   // Settings State
-  const [paySettings, setPaySettings] = useLocalStorage<PaySettings>('ot_settings', {
-    userName: '',
-    baseSalary: '',
-    goalSalary: '',
-    workingDays: 22,
-    hoursPerDay: 9,
-    otGoal: 40,
-    cycleStartDay: 1,
-    cycleEndDay: 30
-  });
+  const [paySettings, setPaySettings] = useLocalStorage<PaySettings>('ot_settings', DEFAULT_SETTINGS, normalizePaySettings);
 const [isEditing, setIsEditing] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState<PaySettings>(paySettings);
   const settingsValidation = validatePaySettings(settingsDraft);
   const paySettingsValidation = validatePaySettings(paySettings);
 
   // Records State: [{ date: '2023-10-25', hours: 4 }]
-  const [otRecords, setOtRecords] = useLocalStorage<OTRecord[]>('ot_records', []);
+  const [otRecords, setOtRecords] = useLocalStorage<OTRecord[]>('ot_records', [], normalizeOTRecords);
 
   // Modal State
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
@@ -154,6 +221,12 @@ const [isEditing, setIsEditing] = useState(false);
   const [cycleOffset, setCycleOffset] = useState(0);
   const [animatedDate, setAnimatedDate] = useState<string | null>(null);
   const [animationKey, setAnimationKey] = useState(0);
+
+  useEffect(() => {
+    if (!animatedDate) return;
+    const timer = window.setTimeout(() => setAnimatedDate(null), 700);
+    return () => window.clearTimeout(timer);
+  }, [animatedDate, animationKey]);
 
   // Derived Rates
   const rates = useMemo(() => {
@@ -172,33 +245,29 @@ const [isEditing, setIsEditing] = useState(false);
     };
   }, [paySettings]);
 
-  // Cycle Date Logic
-  // Inclusive custom salary cycle. Start/end days can cross a month boundary,
-  // but the resulting cycle must be exactly 30 or 31 days.
-  const getCycleDates = (offset: number = 0): { start: Date; end: Date } => {
-    const now = new Date();
-    let targetMonth = now.getMonth() + offset;
-    let targetYear = now.getFullYear();
-    while (targetMonth < 0) { targetMonth += 12; targetYear -= 1; }
-    while (targetMonth > 11) { targetMonth -= 12; targetYear += 1; }
-    const startDay = Number(paySettings.cycleStartDay) || 1;
-    const endDay = Number(paySettings.cycleEndDay) || 30;
-    const crossesMonth = startDay > endDay;
-    let startDate: Date;
-    let endDate: Date;
-    if (crossesMonth) {
-      if (offset === 0 && now.getDate() < startDay) {
-        startDate = new Date(targetYear, targetMonth - 1, startDay);
-        endDate = new Date(targetYear, targetMonth, endDay);
-      } else {
-        startDate = new Date(targetYear, targetMonth, startDay);
-        endDate = new Date(targetYear, targetMonth + 1, endDay);
-      }
-    } else {
-      startDate = new Date(targetYear, targetMonth, startDay);
-      endDate = new Date(targetYear, targetMonth, endDay);
+  // Salary-cycle engine. cycleOffset moves by complete salary cycles, not
+  // by calendar months. Example: 21→20 gives 21 Aug–20 Sep, then
+  // 21 Sep–20 Oct, etc.
+  const getCycleStartForDate = (date: Date): Date => {
+    const startDay = Number(paySettings.cycleStartDay);
+    const endDay = Number(paySettings.cycleEndDay);
+    if (!Number.isInteger(startDay) || !Number.isInteger(endDay) || startDay < 1 || startDay > 28 || endDay < 1 || endDay > 31) {
+      return new Date(date.getFullYear(), date.getMonth(), 1);
     }
-    return { start: startDate, end: endDate };
+
+    const candidate = new Date(date.getFullYear(), date.getMonth(), startDay);
+    if (date >= candidate) return candidate;
+    return new Date(date.getFullYear(), date.getMonth() - 1, startDay);
+  };
+
+  const getCycleDates = (offset: number = 0): { start: Date; end: Date } => {
+    const today = new Date();
+    const baseStart = getCycleStartForDate(today);
+    const start = addMonthsKeepingDay(baseStart, offset);
+    const end = Number(paySettings.cycleEndDay) >= Number(paySettings.cycleStartDay)
+      ? new Date(start.getFullYear(), start.getMonth(), Number(paySettings.cycleEndDay))
+      : new Date(start.getFullYear(), start.getMonth() + 1, Number(paySettings.cycleEndDay));
+    return { start, end };
   };
 
   const { start: currentCycleStart, end: currentCycleEnd } = getCycleDates(cycleOffset);
@@ -208,8 +277,8 @@ const [isEditing, setIsEditing] = useState(false);
     const days = [];
     const current = new Date(currentCycleStart);
     // Safety check to prevent infinite loops if dates are messed up
-    let loopCount = 0; 
-    while (current <= currentCycleEnd && loopCount < 40) {
+    let loopCount = 0;
+    while (current <= currentCycleEnd && loopCount < 32) {
       days.push(new Date(current));
       current.setDate(current.getDate() + 1);
       loopCount++;
@@ -351,7 +420,7 @@ const [isEditing, setIsEditing] = useState(false);
             )}
 
             <button
-              onClick={() => setIsSetupComplete(true)}
+              onClick={() => { if (paySettingsValidation.isValid) { setPaySettings(normalizePaySettings(paySettings)); setCycleOffset(0); setIsSetupComplete(true); } }}
               disabled={!paySettingsValidation.isValid}
               className="w-full py-4 mt-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl transition-colors disabled:opacity-50"
             >
@@ -387,7 +456,7 @@ const [isEditing, setIsEditing] = useState(false);
     const cycleHeader = `${safeDate(currentCycleStart).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${safeDate(currentCycleEnd).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
 
     return (
-      <div className="h-[calc(100dvh-4.5rem)] overflow-hidden flex flex-col animate-in fade-in duration-300">
+      <div className="h-[calc(100svh-4.5rem)] overflow-hidden flex flex-col animate-in fade-in duration-300">
         {/* Header */}
         <header className="px-6 pt-3 pb-0">
           <h1 className="text-xl font-bold tracking-tight text-slate-900">Hello, {paySettings.userName || 'Hustler'}</h1>
@@ -435,7 +504,8 @@ const [isEditing, setIsEditing] = useState(false);
               {cycleDays.map(dateObj => {
                 const dateString = formatDateToYYYYMMDD(dateObj);
                 const day = dateObj.getDate();
-                const isToday = new Date().toDateString() === dateObj.toDateString();
+                const today = new Date();
+                const isToday = today.getFullYear() === dateObj.getFullYear() && today.getMonth() === dateObj.getMonth() && today.getDate() === dateObj.getDate();
                 const record = otRecords.find(r => r.date === dateString);
                 
                 return (
@@ -449,9 +519,9 @@ const [isEditing, setIsEditing] = useState(false);
                       ${record && dateString === animatedDate ? 'animate-[pulse_0.6s_ease-in-out]' : ''}
                     `}
                   >
-                    <span className={record ? 'font-semibold text-indigo-700' : ''}>{day}</span>
+                    <span className={record ? 'font-semibold text-indigo-700 leading-none' : ''}>{day}</span>
                     {record && (
-                      <span className="absolute bottom-0.5 text-[9px] font-bold text-indigo-600 bg-indigo-100 px-1.5 rounded-full">
+                      <span className="mt-1 text-[9px] leading-none font-bold text-indigo-600 bg-indigo-100 px-1.5 py-0.5 rounded-full whitespace-nowrap">
                         +{record.hours}h
                       </span>
                     )}
@@ -519,8 +589,9 @@ const [isEditing, setIsEditing] = useState(false);
   };
 
   const saveSettings = () => {
-    if (!settingsDraft.userName || !settingsDraft.baseSalary || !settingsDraft.goalSalary) return;
-    setPaySettings(settingsDraft);
+    if (!settingsValidation.isValid) return;
+    setPaySettings(normalizePaySettings(settingsDraft));
+    setCycleOffset(0);
     setIsEditing(false);
   };
 
@@ -806,52 +877,54 @@ const [isEditing, setIsEditing] = useState(false);
 };
 
   const renderHistory = () => {
-    // Group records by custom cycle
-    // Note: Implementing deep historical cycle grouping is complex, 
-    // for simplicity and UI robustness, we group by Month-Year based on the record date,
-    // but label them clearly.
-    const grouped = otRecords.reduce((acc: Record<string, { hours: number; earnings: number; count: number }>, record: OTRecord) => {
-      const date = new Date(record.date);
-      if(isNaN(date.getTime())) return acc;
-      const monthYear = date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-      
-      if (!acc[monthYear]) acc[monthYear] = { hours: 0, earnings: 0, count: 0 };
-      acc[monthYear].hours += record.hours;
-      acc[monthYear].earnings += (record.hours * rates.otRate);
-      acc[monthYear].count += 1;
+    type CycleSummary = { start: Date; end: Date; hours: number; earnings: number; count: number };
+
+    const grouped = otRecords.reduce((acc: Record<string, CycleSummary>, record: OTRecord) => {
+      const date = parseDateOnly(record.date);
+      if (!date) return acc;
+      const cycleStart = getCycleStartForDate(date);
+      const cycleEnd = Number(paySettings.cycleEndDay) >= Number(paySettings.cycleStartDay)
+        ? new Date(cycleStart.getFullYear(), cycleStart.getMonth(), Number(paySettings.cycleEndDay))
+        : new Date(cycleStart.getFullYear(), cycleStart.getMonth() + 1, Number(paySettings.cycleEndDay));
+      const key = formatDateToYYYYMMDD(cycleStart);
+      if (!acc[key]) acc[key] = { start: cycleStart, end: cycleEnd, hours: 0, earnings: 0, count: 0 };
+      acc[key].hours += record.hours;
+      acc[key].earnings += record.hours * rates.otRate;
+      acc[key].count += 1;
       return acc;
     }, {});
 
-    const sortedMonths = Object.keys(grouped).sort(
-      (a, b) => new Date(b).getTime() - new Date(a).getTime()
-    );
+    const sortedCycles = Object.values(grouped).sort((a, b) => b.start.getTime() - a.start.getTime());
 
     return (
       <div className="pb-24 pt-8 px-6 animate-in fade-in duration-300">
         <h1 className="text-xl font-bold text-slate-900 mb-6">History</h1>
-        
-        {sortedMonths.length === 0 ? (
+        {sortedCycles.length === 0 ? (
           <div className="text-center py-12 text-slate-400">
             <History size={48} className="mx-auto mb-4 opacity-20" />
             <p>No overtime logged yet.</p>
           </div>
         ) : (
           <div className="space-y-4">
-            {sortedMonths.map(month => (
-              <div key={month} className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100">
-                <h3 className="font-bold text-slate-800 mb-3">{month}</h3>
-                <div className="flex justify-between items-end">
-                  <div>
-                    <p className="text-xs text-slate-500 mb-1">Total Hours ({grouped[month].count} days)</p>
-                    <span className="text-2xl font-semibold text-slate-700">{grouped[month].hours}h</span>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs text-slate-500 mb-1">Earnings</p>
-                    <span className="text-xl font-bold text-emerald-500">{formatCurrency(grouped[month].earnings)}</span>
+            {sortedCycles.map(cycle => {
+              const startLabel = cycle.start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+              const endLabel = cycle.end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+              return (
+                <div key={formatDateToYYYYMMDD(cycle.start)} className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100">
+                  <h3 className="font-bold text-slate-800 mb-3">{startLabel} – {endLabel}</h3>
+                  <div className="flex justify-between items-end">
+                    <div>
+                      <p className="text-xs text-slate-500 mb-1">Total Hours ({cycle.count} days)</p>
+                      <span className="text-2xl font-semibold text-slate-700">{cycle.hours}h</span>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-slate-500 mb-1">Earnings</p>
+                      <span className="text-xl font-bold text-emerald-500">{formatCurrency(cycle.earnings)}</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -905,7 +978,7 @@ const [isEditing, setIsEditing] = useState(false);
               <div>
                 <h3 className="text-xl font-bold text-slate-900">Log Overtime</h3>
                 <p className="text-sm text-slate-500">
-                  {selectedDate ? new Date(selectedDate).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) : ''}
+                  {selectedDate ? (parseDateOnly(selectedDate)?.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }) ?? '') : ''}
                 </p>
               </div>
               <button onClick={() => setIsModalOpen(false)} className="p-2 bg-slate-100 rounded-full text-slate-500 hover:bg-slate-200">
@@ -918,7 +991,7 @@ const [isEditing, setIsEditing] = useState(false);
               <div>
                 <label className="block text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wider">Quick Select</label>
                 <div className="flex flex-wrap gap-2">
-                  {[2, 4, 8, 11].map((h: number) => (
+                  {[1, 2, 3, 9, 11].map((h: number) => (
                     <button
                       key={h}
                       onClick={() => setCustomHours(h.toString())}
